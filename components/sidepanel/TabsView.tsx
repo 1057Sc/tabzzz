@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import type { TabCategory, TabSnapshot } from '../../types/tab';
-import type { RulesConfig } from '../../types/rules';
-import { DEFAULT_FORGOTTEN_TABS_THRESHOLD_MS } from '../../types/rules';
+import type { RulesConfig, SleepRule } from '../../types/rules';
+import { AUTO_MEMORY_MODE, DEFAULT_FORGOTTEN_TABS_THRESHOLD_MS } from '../../types/rules';
 import { api } from '../../lib/messaging';
+import { AUTO_SLEEP_PAUSE_NOTICE } from '../../lib/inactivity';
+import { getSleepBlockReason, isGroupedTab, isProtectedUrl, isTabSleepEligible } from '../../lib/sleepEligibility';
 import {
   ALL_CATEGORIES,
   CATEGORY_COLORS,
@@ -19,14 +21,16 @@ interface Props {
   snapshots: TabSnapshot[];
   rules: RulesConfig | null;
   onRefresh: () => void;
+  onOpenConfig: (target: ConfigFocusTarget) => void;
   isZenMode?: boolean;
 }
+
+export type ConfigFocusTarget = 'autoSleep' | 'forgottenTabs';
 
 type SortKey = 'natural' | 'memory' | 'inactivity' | 'category';
 type StatusFilter = 'all' | 'active' | 'sleeping';
 type ToolbarBusy = 'sleep' | 'group' | 'closeSleeping';
 
-const PROTECTED_URL_PREFIXES = ['chrome://', 'chrome-extension://', 'about:', 'edge://'];
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
@@ -49,24 +53,6 @@ function getMemoryColor(memoryBytes: number, isSleeping: boolean): string {
   if (memoryBytes > MEMORY_THRESHOLDS.WARN) return '#ef4444';
   if (memoryBytes > MEMORY_THRESHOLDS.OK) return '#f59e0b';
   return '#10b981';
-}
-
-function isProtectedUrl(url?: string): boolean {
-  return PROTECTED_URL_PREFIXES.some(prefix => url?.startsWith(prefix));
-}
-
-function isGroupedTab(snapshot: TabSnapshot): boolean {
-  return (snapshot.info.groupId ?? browser.tabGroups.TAB_GROUP_ID_NONE) !== browser.tabGroups.TAB_GROUP_ID_NONE;
-}
-
-function isSleepableTab(snapshot: TabSnapshot, activeTabId: number | null): boolean {
-  return (
-    !snapshot.info.discarded &&
-    snapshot.tabId !== activeTabId &&
-    !snapshot.info.pinned &&
-    !isGroupedTab(snapshot) &&
-    !isProtectedUrl(snapshot.info.url)
-  );
 }
 
 function formatThresholdLabel(thresholdMs: number): string {
@@ -121,7 +107,7 @@ function ToolbarButton({
   );
 }
 
-export default function TabsView({ snapshots, rules, onRefresh, isZenMode = false }: Props) {
+export default function TabsView({ snapshots, rules, onRefresh, onOpenConfig, isZenMode = false }: Props) {
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('natural');
   const [categoryFilter, setCategoryFilter] = useState<'all' | TabCategory>('all');
@@ -131,9 +117,10 @@ export default function TabsView({ snapshots, rules, onRefresh, isZenMode = fals
   const [groupBy, setGroupBy] = useState<'hybrid' | 'native' | 'domain'>('hybrid');
   const [activeTabId, setActiveTabId] = useState<number | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string | number>>(new Set());
-  const [isForgottenCollapsed, setIsForgottenCollapsed] = useState(false);
+  const [isForgottenCollapsed, setIsForgottenCollapsed] = useState(true);
   const [isControlsExpanded, setIsControlsExpanded] = useState(false);
   const [pendingCloseKey, setPendingCloseKey] = useState<string | null>(null);
+  const [shouldScrollToForgotten, setShouldScrollToForgotten] = useState(false);
 
   // Track auto-collapsed states
   const previousSleepStates = useRef<Record<string, boolean>>({});
@@ -181,6 +168,10 @@ export default function TabsView({ snapshots, rules, onRefresh, isZenMode = fals
     return () => window.clearTimeout(timeoutId);
   }, [pendingCloseKey]);
 
+  const sleepRule = useMemo(() => (
+    rules?.rules.find((rule): rule is SleepRule => rule.type === 'sleep') ?? null
+  ), [rules]);
+
   const filteredTabs = snapshots.filter((snapshot) => {
     const haystack = `${snapshot.info.title} ${snapshot.info.url} `.toLowerCase();
     const matchesSearch = !search.trim() || haystack.includes(search.trim().toLowerCase());
@@ -218,7 +209,7 @@ export default function TabsView({ snapshots, rules, onRefresh, isZenMode = fals
 
     sortedTabs.forEach(tab => {
       const inactiveMs = tab.metrics.inactiveMs ?? 0;
-      if (inactiveMs > thresholdMs && tab.tabId !== activeTabId) {
+      if (inactiveMs > thresholdMs && isTabSleepEligible(tab, activeTabId, sleepRule)) {
         forgotten.push(tab);
         return; // skip normal grouping
       }
@@ -276,7 +267,19 @@ export default function TabsView({ snapshots, rules, onRefresh, isZenMode = fals
     }
 
     return { groupedTabs: finalGroups, forgottenTabs: forgotten };
-  }, [sortedTabs, groupBy, activeTabId, rules]);
+  }, [sortedTabs, groupBy, activeTabId, rules, sleepRule]);
+
+  const allForgottenTabs = useMemo(() => {
+    const thresholdMs = rules?.lruThresholdMs ?? DEFAULT_FORGOTTEN_TABS_THRESHOLD_MS;
+    return snapshots.filter(tab => {
+      const inactiveMs = tab.metrics.inactiveMs ?? 0;
+      return inactiveMs > thresholdMs && isTabSleepEligible(tab, activeTabId, sleepRule);
+    });
+  }, [snapshots, activeTabId, rules, sleepRule]);
+
+  const sleepEligibleCount = useMemo(() => (
+    snapshots.filter(tab => isTabSleepEligible(tab, activeTabId, sleepRule)).length
+  ), [snapshots, activeTabId, sleepRule]);
 
   const totalVisibleMemory = filteredTabs.reduce((sum, snapshot) => sum + (snapshot.metrics.memoryBytes ?? 0), 0);
   const closeableSleepingCount = snapshots.filter(snapshot =>
@@ -335,7 +338,7 @@ export default function TabsView({ snapshots, rules, onRefresh, isZenMode = fals
   }
 
   async function handleSleepGroup(groupTabs: TabSnapshot[], groupId?: string | number) {
-    const toSleep = groupTabs.filter(t => isSleepableTab(t, activeTabId));
+    const toSleep = groupTabs.filter(t => isTabSleepEligible(t, activeTabId, sleepRule));
     if (toSleep.length === 0) return;
     setToolbarBusy('sleep');
     try {
@@ -401,7 +404,11 @@ export default function TabsView({ snapshots, rules, onRefresh, isZenMode = fals
 
   const forgottenThresholdMs = rules?.lruThresholdMs ?? DEFAULT_FORGOTTEN_TABS_THRESHOLD_MS;
   const forgottenThresholdLabel = formatThresholdLabel(forgottenThresholdMs);
-  const isForgottenSectionVisible = search.trim() === '' && statusFilter === 'all' && forgottenTabs.length > 0;
+  const sleepThresholdMs = sleepRule?.thresholdMs ?? AUTO_MEMORY_MODE.sleepThresholdMs;
+  const sleepThresholdLabel = formatThresholdLabel(sleepThresholdMs);
+  const isForgottenSectionVisible = search.trim() === '' && statusFilter === 'all' && categoryFilter === 'all';
+  const shouldShowForgottenReminder = allForgottenTabs.length >= 10 ||
+    (allForgottenTabs.length >= 5 && sleepEligibleCount > 0 && allForgottenTabs.length / sleepEligibleCount >= 0.5);
   const hasCollapsibleSections = groupedTabs.size > 0 || isForgottenSectionVisible;
 
   const allSectionsAreCollapsed = useMemo(() => {
@@ -420,6 +427,27 @@ export default function TabsView({ snapshots, rules, onRefresh, isZenMode = fals
       setCollapsedGroups(new Set(groupedTabs.keys()));
       if (isForgottenSectionVisible) setIsForgottenCollapsed(true);
     }
+  }
+
+  useEffect(() => {
+    if (!shouldScrollToForgotten || !isForgottenSectionVisible) return;
+
+    const timeoutId = window.setTimeout(() => {
+      document.getElementById('tabs-forgotten-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setShouldScrollToForgotten(false);
+    }, 50);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [shouldScrollToForgotten, isForgottenSectionVisible, forgottenTabs.length]);
+
+  function handleForgottenSummaryClick() {
+    if (allForgottenTabs.length === 0) return;
+
+    setSearch('');
+    setCategoryFilter('all');
+    setStatusFilter('all');
+    setIsForgottenCollapsed(true);
+    setShouldScrollToForgotten(true);
   }
 
   // Track previous sleepable counts for safe auto-collapse
@@ -456,11 +484,11 @@ export default function TabsView({ snapshots, rules, onRefresh, isZenMode = fals
 
   const firstWakeableTabId = useMemo(() => {
     for (const tabs of groupedTabs.values()) {
-      const found = tabs.find(t => isSleepableTab(t, activeTabId));
+      const found = tabs.find(t => isTabSleepEligible(t, activeTabId, sleepRule));
       if (found) return found.tabId;
     }
     return null;
-  }, [groupedTabs, activeTabId]);
+  }, [groupedTabs, activeTabId, sleepRule]);
 
   const baseInputClass = "bg-bg-elevated text-text-primary border border-bg-border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-accent-blue/50 focus:ring-1 focus:ring-accent-blue/50 transition-colors";
 
@@ -470,17 +498,7 @@ export default function TabsView({ snapshots, rules, onRefresh, isZenMode = fals
     const memoryColor = getMemoryColor(memoryBytes, isSleeping);
     const isBusy = busyId === snapshot.tabId;
     const isActiveTab = activeTabId === snapshot.tabId;
-    const isProtectedTabUrl = isProtectedUrl(snapshot.info.url);
-    const isGrouped = isGroupedTab(snapshot);
-    const sleepBlockReason = isActiveTab
-      ? 'Cannot sleep active tab'
-      : isProtectedTabUrl
-        ? 'Chrome restricts extensions from sleeping system pages'
-        : snapshot.info.pinned
-          ? 'Pinned tabs stay awake'
-          : isGrouped
-            ? 'Grouped tabs stay awake'
-            : null;
+    const sleepBlockReason = getSleepBlockReason(snapshot, activeTabId, sleepRule);
     const canRunSleepAction = isSleeping || sleepBlockReason === null;
     const sleepButtonTitle = isSleeping ? 'Click to wake tab' : sleepBlockReason ?? 'Click to sleep tab';
 
@@ -604,12 +622,40 @@ export default function TabsView({ snapshots, rules, onRefresh, isZenMode = fals
         </div>
       )}
 
+      {!isZenMode && shouldShowForgottenReminder && (
+        <div className="mb-2 flex items-center gap-2 rounded-lg border border-status-warning/20 bg-status-warning/[0.05] px-2 py-1">
+          <button
+            type="button"
+            onClick={handleForgottenSummaryClick}
+            className="min-w-0 flex flex-1 items-center gap-1.5 rounded text-left text-[11px] font-semibold text-status-warning/85 transition-colors hover:text-status-warning focus:outline-none focus:ring-1 focus:ring-status-warning/30"
+            title={`Jump to ${allForgottenTabs.length} forgotten tabs`}
+            aria-label={`Jump to ${allForgottenTabs.length} forgotten tabs`}
+          >
+            <span className="h-2 w-2 shrink-0 rounded-full bg-status-warning shadow-[0_0_8px_rgba(245,158,11,0.65)]"></span>
+            <span className="truncate">Forgotten</span>
+            <span className="shrink-0 rounded bg-bg-elevated px-1.5 py-0.5 text-[10px] font-mono font-bold text-status-warning">
+              {allForgottenTabs.length}
+            </span>
+          </button>
+          <span className="shrink-0 text-[10px] font-semibold text-text-muted/50">Review</span>
+        </div>
+      )}
+
       {!isZenMode && closeableSleepingCount > 0 && (
         <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-status-crit/20 bg-status-crit/5 px-2 py-1.5">
-          <div className="min-w-0 flex items-center gap-1.5 text-[11px] font-semibold text-text-muted">
+          <div className="min-w-0 flex-1 flex items-center gap-1.5 text-[11px] font-semibold text-text-muted">
             <span className="shrink-0 text-accent-blue font-black tracking-widest font-comic">zᶻZ</span>
             <span className="truncate">{closeableSleepingCount} sleeping</span>
           </div>
+          <button
+            type="button"
+            onClick={() => onOpenConfig('autoSleep')}
+            className="shrink-0 whitespace-nowrap rounded-md border border-accent-blue/25 bg-accent-blue/10 px-2 py-1 text-[10px] font-bold tracking-wide text-accent-blue transition-colors hover:border-accent-blue/45 hover:bg-accent-blue/15 hover:text-accent-cyan focus:outline-none focus:ring-1 focus:ring-accent-blue/40"
+            title={`Auto-sleep threshold: ${sleepThresholdLabel}. ${AUTO_SLEEP_PAUSE_NOTICE} Click to configure.`}
+            aria-label={`Auto-sleep threshold: ${sleepThresholdLabel}. ${AUTO_SLEEP_PAUSE_NOTICE} Click to configure.`}
+          >
+            SLEEP {sleepThresholdLabel}
+          </button>
           <button
             onClick={handleCloseSleepingTabs}
             disabled={toolbarBusy !== null}
@@ -644,7 +690,7 @@ export default function TabsView({ snapshots, rules, onRefresh, isZenMode = fals
             const closeArmed = pendingCloseKey === closeKey;
 
             // Group sleep button logic
-            const sleepableCount = tabs.filter(t => isSleepableTab(t, activeTabId)).length;
+            const sleepableCount = tabs.filter(t => isTabSleepEligible(t, activeTabId, sleepRule)).length;
             const allTabsSleeping = tabs.every(t => t.info.discarded);
             const isCollapsed = collapsedGroups.has(groupId);
 
@@ -699,7 +745,7 @@ export default function TabsView({ snapshots, rules, onRefresh, isZenMode = fals
               </div>
             )
           })}
-        {groupedTabs.size === 0 && (
+        {groupedTabs.size === 0 && (!isForgottenSectionVisible || allForgottenTabs.length === 0) && (
           <div className="glass-panel border-dashed border-bg-border rounded-xl p-8 text-center text-sm text-text-muted">
             No tabs match the current filters.
           </div>
@@ -707,7 +753,7 @@ export default function TabsView({ snapshots, rules, onRefresh, isZenMode = fals
 
         {/* Forgotten Tabs Section */}
         {isForgottenSectionVisible && (
-          <div className="transition-all duration-500 fill-mode-both mt-3 pt-2">
+          <div id="tabs-forgotten-section" className="scroll-mt-2 transition-all duration-500 fill-mode-both mt-3 pt-2">
             <div
               className="flex items-center gap-1.5 mb-1.5 cursor-pointer group/header hover:bg-white/5 p-1 rounded-lg transition-colors"
               onClick={() => setIsForgottenCollapsed(!isForgottenCollapsed)}
@@ -719,22 +765,33 @@ export default function TabsView({ snapshots, rules, onRefresh, isZenMode = fals
               <div className="text-xs font-bold truncate text-status-warning flex items-center gap-2">
                 Forgotten Tabs
               </div>
-              <div className="px-1.5 py-0.5 rounded text-[10px] bg-bg-elevated text-text-muted font-mono shrink-0 font-bold">{forgottenTabs.length}</div>
+              <div className="px-1.5 py-0.5 rounded text-[10px] bg-bg-elevated text-text-muted font-mono shrink-0 font-bold">{allForgottenTabs.length}</div>
 
               <div className="ml-auto flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                <span className="whitespace-nowrap text-[10px] text-text-muted/60 font-semibold tracking-wide bg-bg-elevated px-2 py-0.5 rounded border border-white/5" title={`Configured forgotten tabs threshold: ${forgottenThresholdLabel}`}>OVER {forgottenThresholdLabel}</span>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenConfig('forgottenTabs');
+                  }}
+                  className="whitespace-nowrap rounded border border-white/5 bg-bg-elevated px-2 py-0.5 text-[10px] font-semibold tracking-wide text-text-muted/60 transition-colors hover:border-status-warning/30 hover:bg-status-warning/10 hover:text-status-warning focus:outline-none focus:ring-1 focus:ring-status-warning/40"
+                  title={`Forgotten tabs threshold: ${forgottenThresholdLabel}. Click to configure.`}
+                  aria-label={`Forgotten tabs threshold: ${forgottenThresholdLabel}. Click to configure.`}
+                >
+                  OVER {forgottenThresholdLabel}
+                </button>
                 <div className="flex items-center gap-1 opacity-0 group-hover/header:opacity-100 transition-opacity">
                   <button
-                    onClick={(e) => { e.stopPropagation(); handleSleepGroup(forgottenTabs, 'forgotten'); }}
-                    disabled={toolbarBusy !== null || forgottenTabs.length === 0}
+                    onClick={(e) => { e.stopPropagation(); handleSleepGroup(allForgottenTabs, 'forgotten'); }}
+                    disabled={toolbarBusy !== null || allForgottenTabs.length === 0}
                     className="flex items-center justify-center w-7 h-7 rounded-md border border-white/10 text-text-secondary hover:text-white hover:bg-white/10 hover:border-white/30 transition-colors bg-bg-elevated"
                     title={`Sleep all forgotten tabs`}
                   >
                     <span className="text-[9px] font-black tracking-widest font-comic text-accent-blue">zᶻZ</span>
                   </button>
                   <button
-                    onClick={(e) => { e.stopPropagation(); handleCloseGroup(forgottenTabs, 'forgotten'); }}
-                    disabled={toolbarBusy !== null || forgottenTabs.length === 0}
+                    onClick={(e) => { e.stopPropagation(); handleCloseGroup(allForgottenTabs, 'forgotten'); }}
+                    disabled={toolbarBusy !== null || allForgottenTabs.length === 0}
                     className={`flex items-center justify-center w-7 h-7 rounded-md border transition-colors bg-bg-elevated ${pendingCloseKey === 'forgotten' ? 'border-status-crit/50 text-white bg-status-crit/20' : 'border-status-crit/20 text-status-crit/70 hover:text-status-crit hover:bg-status-crit/10 hover:border-status-crit/40'}`}
                     title={pendingCloseKey === 'forgotten' ? 'Click again to close all forgotten tabs' : `Close all forgotten tabs`}
                   >

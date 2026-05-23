@@ -60,7 +60,7 @@ export interface RulesConfig {
 export const DEFAULT_FORGOTTEN_TABS_THRESHOLD_MS = 8 * 60 * 60 * 1000;
 
 export const AUTO_MEMORY_MODE = {
-  sleepThresholdMs: 30 * 60 * 1000,
+  sleepThresholdMs: 60 * 60 * 1000,
   tabMemoryLimitBytes: 12 * 1024 * 1024 * 1024,
   availableMemoryFloorBytes: 1.5 * 1024 * 1024 * 1024,
   maxActiveTabs: 80,

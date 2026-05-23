@@ -1,4 +1,5 @@
 import { StorageService } from '../storage/StorageService';
+import { getEffectiveInactiveMs } from '../../lib/inactivity';
 
 let activityCache: Record<number, number> = {};
 let persistTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -86,7 +87,7 @@ export const TabLifecycleManager = {
   },
 
   getInactiveMs(tabId: number): number {
-    return Date.now() - this.getLastActiveAt(tabId);
+    return getEffectiveInactiveMs(this.getLastActiveAt(tabId));
   },
 
   getActivityMap(): Record<number, number> {

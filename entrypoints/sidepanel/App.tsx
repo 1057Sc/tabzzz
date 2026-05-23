@@ -7,8 +7,9 @@ import type { AISettings } from '../../types/ai';
 import type { UiSettings } from '../../types/ui';
 import { DEFAULT_UI_SETTINGS } from '../../types/ui';
 import { api } from '../../lib/messaging';
+import { AUTO_SLEEP_PAUSE_NOTICE } from '../../lib/inactivity';
 import DashboardView from '../../components/sidepanel/DashboardView';
-import TabsView from '../../components/sidepanel/TabsView';
+import TabsView, { type ConfigFocusTarget } from '../../components/sidepanel/TabsView';
 import ConfigView from '../../components/sidepanel/ConfigView';
 import AIGroupsView from '../../components/sidepanel/AIGroupsView';
 import {
@@ -71,11 +72,13 @@ type ThresholdOption = {
 };
 
 interface ThresholdSliderProps {
+  id?: string;
   title: string;
   description: string;
   value: number;
   options: readonly ThresholdOption[];
   disabled?: boolean;
+  highlighted?: boolean;
   onChange: (value: number) => void;
 }
 
@@ -86,12 +89,15 @@ function getNearestThresholdIndex(options: readonly ThresholdOption[], value: nu
   }, 0);
 }
 
-function ThresholdSlider({ title, description, value, options, disabled, onChange }: ThresholdSliderProps) {
+function ThresholdSlider({ id, title, description, value, options, disabled, highlighted = false, onChange }: ThresholdSliderProps) {
   const selectedIndex = getNearestThresholdIndex(options, value);
   const selectedOption = options[selectedIndex];
 
   return (
-    <div>
+    <div
+      id={id}
+      className={`scroll-mt-3 rounded-xl transition-all duration-500 ${highlighted ? 'bg-accent-cyan/5 shadow-[0_0_0_1px_rgba(34,211,238,0.45),0_0_24px_rgba(34,211,238,0.12)]' : ''}`}
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-xs font-bold mb-0.5 text-text-secondary uppercase tracking-wider">{title}</h2>
@@ -138,6 +144,7 @@ function ThresholdSlider({ title, description, value, options, disabled, onChang
 export default function App() {
   const [activeTab, setActiveTab] = useState<NavTab>('tabs');
   const [navOrder, setNavOrder] = useState<NavTab[]>(['tabs', 'dashboard', 'config']);
+  const [configFocusTarget, setConfigFocusTarget] = useState<ConfigFocusTarget | null>(null);
   const [appState, setAppState] = useState<AppState>({
     snapshots: [],
     latestMemory: null,
@@ -168,6 +175,24 @@ export default function App() {
     const sleepRule = appState.rules?.rules.find((r: any) => r.type === 'sleep') as any;
     if (sleepRule?.thresholdMs) setSleepThresholdMs(sleepRule.thresholdMs);
   }, [appState.rules]);
+
+  useEffect(() => {
+    if (activeTab !== 'config' || !configFocusTarget) return;
+
+    const targetId = configFocusTarget === 'autoSleep'
+      ? 'config-auto-sleep-threshold'
+      : 'config-forgotten-tabs-threshold';
+
+    const scrollTimeoutId = window.setTimeout(() => {
+      document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 50);
+    const clearTimeoutId = window.setTimeout(() => setConfigFocusTarget(null), 1800);
+
+    return () => {
+      window.clearTimeout(scrollTimeoutId);
+      window.clearTimeout(clearTimeoutId);
+    };
+  }, [activeTab, configFocusTarget]);
 
   const handleDragStart = (e: React.DragEvent, id: NavTab) => {
     e.dataTransfer.setData('text/plain', id);
@@ -321,33 +346,13 @@ export default function App() {
     setIsExemptDomainsExpanded(true);
   }
 
+  function openConfigTarget(target: ConfigFocusTarget): void {
+    setConfigFocusTarget(target);
+    setActiveTab('config');
+  }
+
   return (
     <div className={`flex flex-col bg-bg-base text-text-primary font-sans overflow-hidden ${isPopupSurface ? 'w-[380px] h-[560px]' : 'h-screen'}`}>
-      {/* Top Bar */}
-      {!isZenMode && (
-        <div className="flex items-center justify-between px-2 py-1.5 bg-bg-elevated/80 backdrop-blur-md border-b border-bg-border shrink-0 z-20 shadow-sm relative transition-all duration-300">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-accent-indigo to-accent-cyan p-0.5 shadow-lg shadow-accent-indigo/20">
-              <div className="w-full h-full bg-bg-elevated rounded-[6px] flex items-center justify-center">
-                <span className="text-transparent bg-clip-text bg-gradient-to-br from-accent-indigo to-accent-cyan font-black text-lg">⬡</span>
-              </div>
-            </div>
-            <div>
-              <h1 className="font-bold text-base tracking-tight leading-tight">TabZZZ</h1>
-              <div className="text-[10px] text-text-secondary font-medium tracking-widest uppercase">Memory Manager</div>
-            </div>
-          </div>
-          <button
-            onClick={() => void refresh(true)}
-            className="flex items-center gap-1.5 px-2 py-1 rounded-lg border border-bg-border hover:border-white/10 hover:bg-white/5 text-xs font-semibold text-text-secondary hover:text-text-primary transition-all active:scale-95 group focus:outline-none focus:ring-1 focus:ring-white/20"
-            aria-label="Refresh data"
-          >
-            <ArrowPathIcon className="w-3.5 h-3.5 group-active:rotate-180 transition-transform duration-300" />
-            Refresh
-          </button>
-        </div>
-      )}
-
       {/* Nav Tabs */}
       <div className="flex bg-bg-elevated/50 border-b border-bg-border shrink-0 z-10 px-1 pt-1 gap-0.5 overflow-x-auto scrollbar-hide items-center">
         <div className="flex flex-1 gap-0.5 overflow-x-auto scrollbar-hide">
@@ -363,7 +368,10 @@ export default function App() {
                 onDragStart={(e) => handleDragStart(e, item.id)}
                 onDragOver={handleDragOver}
                 onDrop={(e) => handleDrop(e, item.id)}
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => {
+                  setConfigFocusTarget(null);
+                  setActiveTab(item.id);
+                }}
                 className={`relative flex items-center gap-1.5 px-2 py-1 text-xs font-semibold transition-all duration-200 outline-none rounded-t-lg group whitespace-nowrap cursor-grab active:cursor-grabbing
                 ${isActive ? 'text-text-primary bg-bg-base' : 'text-text-secondary hover:text-text-primary hover:bg-white/5'}
               `}
@@ -397,9 +405,17 @@ export default function App() {
           })}
         </div>
         <button
+          onClick={() => void refresh(true)}
+          className="p-1 mb-1 rounded-md text-text-muted hover:text-text-primary hover:bg-white/10 transition-colors shrink-0 outline-none focus:ring-1 focus:ring-white/20 group"
+          title="Refresh data"
+          aria-label="Refresh data"
+        >
+          <ArrowPathIcon className="w-4 h-4 group-active:rotate-180 transition-transform duration-300" />
+        </button>
+        <button
           onClick={() => setIsZenMode(!isZenMode)}
           className="p-1 mb-1 rounded-md text-text-muted hover:text-text-primary hover:bg-white/10 transition-colors shrink-0 outline-none focus:ring-1 focus:ring-white/20"
-          title={isZenMode ? "Expand Header" : "Collapse Header (Zen Mode)"}
+          title={isZenMode ? "Show controls" : "Hide controls"}
         >
           {isZenMode ? <ChevronDownIcon className="w-4 h-4" /> : <ChevronUpIcon className="w-4 h-4" />}
         </button>
@@ -429,6 +445,7 @@ export default function App() {
                 snapshots={appState.snapshots}
                 rules={appState.rules}
                 onRefresh={refresh}
+                onOpenConfig={openConfigTarget}
                 isZenMode={isZenMode}
               />
             )}
@@ -461,11 +478,13 @@ export default function App() {
                 </div>
 
                 <ThresholdSlider
+                  id="config-auto-sleep-threshold"
                   title="Auto-sleep threshold"
-                  description="Auto mode sleeps inactive tabs after this long."
+                  description={`Auto mode sleeps inactive tabs after this long. ${AUTO_SLEEP_PAUSE_NOTICE}`}
                   value={sleepThresholdMs}
                   options={SLEEP_THRESHOLD_OPTIONS}
                   disabled={!appState.rules}
+                  highlighted={configFocusTarget === 'autoSleep'}
                   onChange={next => {
                     setSleepThresholdMs(next);
                     updateSleepRule((rule: any) => ({ ...rule, thresholdMs: next }));
@@ -473,11 +492,13 @@ export default function App() {
                 />
 
                 <ThresholdSlider
+                  id="config-forgotten-tabs-threshold"
                   title="Forgotten tabs threshold"
                   description="Tabs inactive longer than this are grouped for quick review."
                   value={forgottenThresholdMs}
                   options={FORGOTTEN_THRESHOLD_OPTIONS}
                   disabled={!appState.rules}
+                  highlighted={configFocusTarget === 'forgottenTabs'}
                   onChange={next => {
                     if (appState.rules) {
                       saveRules({ ...appState.rules, lruThresholdMs: next });

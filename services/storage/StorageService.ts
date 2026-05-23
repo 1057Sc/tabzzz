@@ -17,7 +17,7 @@ const KEYS = {
   SCHEMA_VERSION: 'tabzzz:schema:version',
 } as const;
 
-const CURRENT_SCHEMA_VERSION = 5;
+const CURRENT_SCHEMA_VERSION = 6;
 const MAX_SNAPSHOTS = 120; // 2 hours at 60s interval
 const OLD_DEFAULT_SLEEP_THRESHOLD_MS = 30 * 60 * 1000;
 const OLD_DEFAULT_MEMORY_LIMIT_BYTES = 10 * 1024 * 1024 * 1024;
@@ -26,6 +26,7 @@ const V2_DEFAULT_SLEEP_THRESHOLD_MS = 15 * 60 * 1000;
 const V2_DEFAULT_MEMORY_LIMIT_BYTES = 8 * 1024 * 1024 * 1024;
 const V2_DEFAULT_AVAILABLE_MEMORY_FLOOR_BYTES = 2 * 1024 * 1024 * 1024;
 const V2_DEFAULT_TAB_LIMIT = 40;
+const V5_DEFAULT_SLEEP_THRESHOLD_MS = 30 * 60 * 1000;
 const AI_EXEMPT_DOMAINS = ['claude.ai', 'chatgpt.com', 'gemini.google.com'];
 
 async function get<T>(key: string): Promise<T | undefined> {
@@ -145,6 +146,20 @@ function migrateRulesForDefaultAiExemptDomains(config: RulesConfig): RulesConfig
   return changed ? { ...config, rules: migratedRules, lastModified: Date.now() } : config;
 }
 
+function migrateRulesForOneHourDefaultSleep(config: RulesConfig): RulesConfig {
+  let changed = false;
+  const migratedRules = config.rules.map((rule: any) => {
+    if (rule.id === 'default-sleep' && rule.type === 'sleep' && rule.thresholdMs === V5_DEFAULT_SLEEP_THRESHOLD_MS) {
+      changed = true;
+      return { ...rule, thresholdMs: AUTO_MEMORY_MODE.sleepThresholdMs };
+    }
+
+    return rule;
+  });
+
+  return changed ? { ...config, rules: migratedRules, lastModified: Date.now() } : config;
+}
+
 export const StorageService = {
   async init(): Promise<void> {
     const version = await get<number>(KEYS.SCHEMA_VERSION);
@@ -170,6 +185,9 @@ export const StorageService = {
       }
       if (version < 4) {
         migrated = migrateRulesForDefaultAiExemptDomains(migrated);
+      }
+      if (version < 6) {
+        migrated = migrateRulesForOneHourDefaultSleep(migrated);
       }
       await set<RulesConfig>(KEYS.RULES, migrated);
       if (version < 5) {

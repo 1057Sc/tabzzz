@@ -5,32 +5,11 @@ import { StorageService } from '../storage/StorageService';
 import { sortByEvictionPriority } from '../../lib/priorityScorer';
 import { TabSleepService } from './TabSleepService';
 import { MemoryMonitor } from '../memory/MemoryMonitor';
+import { isTabSleepEligible } from '../../lib/sleepEligibility';
+import { getEffectiveInactiveMs } from '../../lib/inactivity';
 
 const DEFAULT_AVAILABLE_MEMORY_FLOOR_BYTES = 1.5 * 1024 * 1024 * 1024;
 const TAB_GROUP_ID_NONE = -1;
-
-/**
- * Checks if a URL's hostname matches a domain pattern.
- * Supports exact match (e.g. 'localhost') and wildcard prefix (e.g. '*.openai.com').
- */
-function matchesDomainPattern(url: string, pattern: string): boolean {
-  let hostname: string;
-  try {
-    hostname = new URL(url).hostname;
-  } catch {
-    return false;
-  }
-  if (pattern.startsWith('*.')) {
-    const suffix = pattern.slice(1); // e.g. '.openai.com'
-    return hostname === pattern.slice(2) || hostname.endsWith(suffix);
-  }
-  return hostname === pattern;
-}
-
-function isExemptDomain(url: string, exemptDomains: string[]): boolean {
-  if (!url || !exemptDomains?.length) return false;
-  return exemptDomains.some(p => matchesDomainPattern(url, p));
-}
 
 function isGrouped(snapshot: TabSnapshot): boolean {
   return (snapshot.info.groupId ?? TAB_GROUP_ID_NONE) !== TAB_GROUP_ID_NONE;
@@ -40,18 +19,25 @@ function isProtectedFromAutomation(snapshot: TabSnapshot): boolean {
   return snapshot.info.pinned || isGrouped(snapshot);
 }
 
+async function getActiveTabIds(): Promise<Set<number>> {
+  try {
+    const tabs = await chrome.tabs.query({ active: true }) as Array<{ id?: number }>;
+    return new Set(tabs.map(tab => tab.id).filter((id: number | undefined): id is number => typeof id === 'number'));
+  } catch {
+    return new Set();
+  }
+}
+
 async function evalSleepRule(rule: SleepRule, snapshots: TabSnapshot[]): Promise<number> {
   let discarded = 0;
   const now = Date.now();
+  const activeTabIds = await getActiveTabIds();
 
   for (const snap of snapshots) {
-    if (snap.info.discarded) continue;
-    if (isProtectedFromAutomation(snap)) continue;
-    if (rule.exemptAudible && snap.info.audible) continue;
-    if (rule.exemptCategories.includes(snap.metrics.category)) continue;
-    if (isExemptDomain(snap.info.url ?? '', rule.exemptDomains ?? [])) continue;
+    const activeTabId = activeTabIds.has(snap.tabId) ? snap.tabId : null;
+    if (!isTabSleepEligible(snap, activeTabId, rule)) continue;
 
-    const inactiveMs = now - snap.metrics.lastActiveAt;
+    const inactiveMs = getEffectiveInactiveMs(snap.metrics.lastActiveAt, now);
     if (inactiveMs >= rule.thresholdMs) {
       const ok = await TabSleepService.sleep(snap.tabId);
       if (ok) discarded++;
