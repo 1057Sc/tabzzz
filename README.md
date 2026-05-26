@@ -1,6 +1,6 @@
 # TabZZZ
 
-TabZZZ is a lightweight Chrome tab memory manager for people who keep many tabs open and want Chrome to feel lighter without constantly managing tabs by hand.
+TabZZZ is a lightweight Chrome tab memory manager for people who keep many tabs open, but only need the recent and fixed ones awake.
 
 [English](#english) | [中文](#chinese)
 
@@ -10,18 +10,28 @@ TabZZZ is a lightweight Chrome tab memory manager for people who keep many tabs 
 
 ### What is TabZZZ?
 
-TabZZZ helps reduce Chrome tab memory pressure with Chrome's native tab discard capability. It is designed around two product principles:
+Modern browser work keeps getting heavier: AI chats, docs, dashboards, developer tools, and long-lived web apps can leave Chrome carrying more tabs and processes than your memory, and your attention, should have to hold.
 
-- **Low power**: prefer Chrome native extension APIs, Manifest V3 service worker behavior, and event-driven updates.
-- **Low distraction**: keep the UI quiet, protect important tabs by default, and avoid asking users to manually manage every tab.
+TabZZZ helps reduce Chrome tab memory pressure with Chrome's native tab discard capability. It is for people who may keep Chrome at 20GB+ with dozens of open tabs, while realistically only following the last hour of work and a few fixed sites.
+
+The goal is light resource and attention relief: let tabs you are not looking at sleep, keep the current working set awake, then batch-close the idle or sleeping pages when you are ready to clear the clutter.
+
+It is designed around four product principles:
+
+- **Resource relief**: sleep tabs outside your recent or fixed working set.
+- **Attention relief**: surface forgotten and sleeping tabs without asking you to constantly organize everything by hand.
+- **Low distraction**: protect active tabs, pinned tabs, grouped tabs, audio tabs, and configured Never Sleep sites by default.
+- **Native and local**: use Chrome native discard, Chrome-native UI, local storage, and no webpage injection.
 
 TabZZZ does not inject scripts into webpages, does not add a custom sidebar to every page, and does not modify webpage titles.
 
 ### Core Capabilities
 
 - **Auto sleep**: Sleep inactive tabs with Chrome's native discard mechanism.
-- **Protected work**: Keep active work, pinned tabs, grouped tabs, audio tabs, and configured sites like AI chat pages awake.
-- **Quick cleanup**: Group forgotten tabs and batch-close sleeping tabs when they are no longer needed.
+- **Protected working set**: Keep recent work, pinned tabs, grouped tabs, audio tabs, and configured sites like AI chat pages awake. The default inactivity threshold is 1 hour and can be adjusted.
+- **Forgotten tab review**: Surface tabs that have been inactive for a long time so you can decide what to keep.
+- **Batch cleanup**: Close sleeping tabs in bulk when they are no longer needed.
+- **Conservative behavior**: Prefer sleeping fewer tabs over surprising you.
 - **Low footprint**: Run through Chrome-native UI, local storage, and no webpage injection.
 
 ### Install Locally
@@ -111,20 +121,28 @@ MIT
 
 ### TabZZZ 是什么？
 
-TabZZZ 是一个轻量的 Chrome 标签页内存管理扩展，适合每天打开很多 tab、希望 Chrome 变轻一点、但又不想频繁手动整理标签页的人。
+TabZZZ 是一个轻量的 Chrome 标签页内存管理扩展，适合每天打开很多 tabs，但真正关注的只是最近一小时和少数固定页面的人。
+
+现在很多工作都在浏览器里完成，AI chat、文档、控制台、dashboard、长期打开的 Web app 越来越多。Chrome 可能背着几十个暂时不看的页面占用 20GB+ 内存，而这些 tabs 也早就超过了人当天真正能阅读和处理的范围。
+
+TabZZZ 做的是一件轻量的事：让暂时不关注的 tabs 先睡着，把资源和注意力留给当前真正需要的页面；等你确认不再需要时，再批量关闭这些闲置或已睡眠的页面，把资源占用和注意力负担一起清掉。
 
 它的核心思路很简单：
 
-- **低能耗**：优先使用 Chrome 原生扩展能力、Manifest V3 service worker 和事件驱动更新。
-- **轻打扰**：默认保护重要页面，界面尽量安静，尽量少让用户感知它的存在。
+- **资源减压**：让最近工作集和固定页面之外的 tabs 进入睡眠。
+- **注意力减压**：把遗忘的、已经睡眠的 tabs 集中展示出来，但不要求你持续手动整理所有东西。
+- **轻打扰**：默认保护 active tabs、pinned tabs、grouped tabs、音频标签，以及配置过的 Never Sleep 站点。
+- **原生和本地**：使用 Chrome 原生 discard、Chrome 原生界面、本地存储，不向网页注入脚本。
 
 TabZZZ 不往网页里注入脚本，不在每个网页里塞自定义侧边栏，也不会修改网页标题。
 
 ### 核心能力
 
 - **自动睡眠**：使用 Chrome 原生 discard 机制休眠不活跃标签页。
-- **保护工作现场**：默认保护当前工作、pinned tabs、grouped tabs、音频标签，以及 AI Chat 等可配置的指定网站。
-- **快速清理**：聚合遗忘标签，并支持批量关闭已经 sleeping 的 tabs。
+- **保护工作现场**：保护最近工作、pinned tabs、grouped tabs、音频标签，以及 AI Chat 等可配置的指定网站。默认不活跃阈值是 1 小时，可调整。
+- **遗忘标签回顾**：集中展示长时间不活跃的 tabs，方便你决定哪些还需要保留。
+- **批量清理**：支持批量关闭已经 sleeping 的 tabs。
+- **保守执行**：宁愿少 sleep 一些 tabs，也尽量不打断你的工作现场。
 - **低负担运行**：使用 Chrome 原生界面、本地存储，不向网页注入脚本。
 
 ### 本地安装
